@@ -1,0 +1,354 @@
+trigger: none
+variables:
+
+-  group: docker-test
+
+- name: jfrogusername1
+  value: $(docker-testsusername)
+
+- name: jfrogspwd1
+  value: $(docker-testspat)
+
+
+jobs:
+  - job:
+    displayName: 'docker_based'
+    pool:
+      name: test
+    container:
+      image: jfrog:image
+      endpoint: pqa-sb-docker
+
+    steps:
+      - task: NodeTool@0
+        displayName: 'Use Node 18.17.1'
+        inputs:
+          versionSpec: 18.17.1
+
+      - task: DeleteFiles@1
+        displayName: 'Delete files from $(build.artifactstagingdirectory)'
+        inputs:
+          SourceFolder: '$(build.artifactstagingdirectory)'
+          Contents: '**'
+
+      - task: Npm@1
+        displayName: 'npm install'
+        inputs:
+          workingDir: '.'
+          verbose: false
+          customEndpoint: .
+
+      - task: Npm@1
+        displayName: 'npm build'
+        inputs:
+          command: custom
+          workingDir: '.'
+          verbose: false
+          customCommand: 'run build'
+
+      - task: Npm@1
+        displayName: 'npm tslint'
+        inputs:
+          command: custom
+          workingDir: '.'
+          verbose: false
+          customCommand: 'run lint'
+        continueOnError: true
+
+      - task: Npm@1
+        displayName: 'npm test'
+        inputs:
+          command: custom
+          workingDir: '.'
+          verbose: false
+          customCommand: 'run test'
+
+      - task: PublishCodeCoverageResults@1
+        displayName: 'Publish code coverage from $(Build.SourcesDirectory)\Back End\.\coverage\cobertura-coverage.xml'
+        inputs:
+          codeCoverageTool: Cobertura
+          summaryFileLocation: '$(Build.SourcesDirectory)\Back End\.\coverage\cobertura-coverage.xml'
+          reportDirectory: '$(Build.SourcesDirectory)\Back End\.\coverage'
+
+      - task: CopyFiles@2
+        displayName: 'Copy Files to: $(build.artifactstagingdirectory)\build'
+        inputs:
+          SourceFolder: '$(system.defaultworkingdirectory)\Back End\.\build'
+          Contents: '**'
+          TargetFolder: '$(build.artifactstagingdirectory)\build'
+        condition: succeededOrFailed()
+
+      - task: CopyFiles@2
+        displayName: 'Copy package.json Files to: $(build.artifactstagingdirectory) '
+        inputs:
+          SourceFolder: '$(Build.SourcesDirectory)\Back End\.'
+          Contents: 'package.json'
+          TargetFolder: '$(build.artifactstagingdirectory)'
+        condition: succeededOrFailed()
+
+      - task: PublishBuildArtifacts@1
+        inputs:
+          PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+          ArtifactName: 'drop'
+          publishLocation: 'Container'
+        displayName: 'Publish Artifact: drop'
+
+####################
+
+trigger: none
+variables:
+-  group: docker-test
+
+jobs:
+  - job: Build
+    displayName: 'build'
+    pool:
+      name: pqa-test
+    container:
+      image: jfrog:image:latest
+      endpoint: sb-docker
+  
+    steps:  
+    - task: DownloadSecureFile@1
+      name: nuget
+      displayName: 'Download Nuget file'
+      inputs:
+         secureFile: NuGet.Config
+      
+    - bash: |
+         echo cp $(nuget.secureFilePath) ...
+         cp $(nuget.secureFilePath) $(Build.SourcesDirectory)/NuGet.Config
+      displayName: 'Copy NuGet File to destination'
+    
+    - task: NuGetCommand@2
+      displayName: 'NuGet restore GitVersion'
+      inputs:
+        restoreSolution: packages.GitVersion.config
+        feedsToUse: config
+        nugetConfigPath: nuget.config
+        externalFeedCredentials: 'test-nuget .-test-nuget'
+        restoreDirectory: '$(Build.SourcesDirectory)\GitVersion'
+      continueOnError: true
+    
+    - bash: |
+       dotnet build -c Release $(Build.SourcesDirectory)/test/test.sln
+      displayName:  Build
+    
+    - bash: |
+         dotnet publish --self-contained true /p:Product="test" -o $(build.artifactstagingdirectory)/Release Deploy4Image -c $(Build.SourcesDirectory)/test/test.sln
+      displayName: .NET Publish
+      continueOnError: true
+      enabled: false
+      
+    - bash: |
+         dotnet publish $(Build.SourcesDirectory)/test/test.sln
+      displayName: .NET Publish
+      continueOnError: true
+
+    - bash: |
+          dotnet test $(Build.SourcesDirectory)/test/test.sln--results-directory $(Build.ArtifactStagingDirectory)/testresults --no-build --no-restore --logger trx -c Release 
+      displayName: '.NET Test'
+      condition: succeededOrFailed()
+      continueOnError: true
+      enabled: true
+    
+    - bash: |            
+            dotnet tool install dotnet-coverage --tool-path .
+            ./dotnet-coverage merge  $(Build.ArtifactStagingDirectory)/testresults/**/*.coverage -R -f xml -o $(Build.ArtifactStagingDirectory)/testresults/coverage.xml --remove-input-files
+      displayName: Convert VS coverage files to XML
+      condition: succeededOrFailed()
+      continueOnError: true
+    
+    
+    - task: PublishCodeCoverageResults@1
+      condition: succeededOrFailed()
+      inputs:
+          summaryFileLocation: $(Build.ArtifactStagingDirectory)/testresults/coverage.xml
+          reportDirectory: $(Build.ArtifactStagingDirectory)/testresults
+          codecoverageTool: cobertura
+      continueOnError: true
+      
+      
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'VSTest'
+        testResultsFiles: '$(Build.ArtifactStagingDirectory)/testresults/*.trx'
+        mergeTestResults: true
+      continueOnError: true
+   
+    - task: CopyFiles@2
+      displayName: 'Copy Files to $(build.artifactstagingdirectory)\test
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\test1
+        TargetFolder: '$(build.artifactstagingdirectory)\test1
+        CleanTargetFolder: true
+      continueOnError: true
+
+    - task: CopyFiles@2
+      displayName: 'Copy Files to $(build.artifactstagingdirectory)\Gitversion'
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)'
+        Contents: version.json
+        TargetFolder: '$(build.artifactstagingdirectory)\Gitversion'
+      continueOnError: true
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Artifact'
+      inputs:
+        PathtoPublish: '$(build.artifactstagingdirectory)'
+        ArtifactName: '$(Parameters.ArtifactName)'
+      condition: succeededOrFailed()
+      continueOnError: true
+
+####################
+
+trigger: none
+variables:
+
+-  group: docker-test
+
+- name: jfrogusername1
+  value: $(testsusername)
+
+- name: jfrogspwd1
+  value: $(testspat)
+
+
+jobs:
+  - job:
+    displayName: 'build'
+    pool:
+      name: test
+    container:
+      image: dockerimage:latest
+      endpoint: sb-docker
+  
+    steps:
+    - task: VisualStudioTestPlatformInstaller@1
+      displayName: 'Visual Studio Test Platform Installer'
+      inputs:
+        packageFeedSelector: 'nugetOrg'
+        versionSelector: 'latestStable'
+
+    - task: NuGetToolInstaller@0
+      displayName: 'Use NuGet 6.3.0'
+      inputs:
+        versionSpec: '6.3.0'
+    
+    - task: CmdLine@2
+      displayName: 'copy repos'
+      inputs:
+        script: |
+          mkdir component.Servicetests
+    
+    - task: CopyFiles@2
+      displayName: 'copy repos1'
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)'
+        Contents: '**'
+        TargetFolder: 'component.Servicetests'
+    
+    - task: NuGetCommand@2
+      displayName: 'NuGet Clear Local Cache'
+      inputs:
+        command: custom
+        arguments: 'locals all -clear'
+          
+  
+    - task: NuGetCommand@2
+      displayName: 'NuGet restore'
+      inputs:
+          restoreSolution: test.sln
+          feedsToUse: config
+          nugetConfigPath: nuget.config
+          externalFeedCredentials: ''test' , 'test2serviceconnection'
+      continueOnError: true
+    
+    - task: NuGetCommand@2
+      displayName: 'NuGet restore GitVersion'
+      inputs:
+        restoreSolution: packages.GitVersion.config
+        feedsToUse: config
+        nugetConfigPath: nuget.config
+        externalFeedCredentials: 'test' , 'test2serviceconnection'
+        restoreDirectory: '$(Build.SourcesDirectory)\GitVersion'
+
+
+    - script: '$(Build.SourcesDirectory)\GitVersion\GitVersion.CommandLine.4.0.0\tools\GitVersion > version.json'
+      displayName: 'Command Line Script'
+      continueOnError: true
+    
+    - task: CmdLine@2
+      inputs:
+        script: '$(Build.SourcesDirectory)\component.Service\component.Network dotnet add package coverlet.msbuild --version 6.0.0'
+      displayName: 'add codecoverage6.0'
+      continueOnError: true
+    
+
+    - task: VSBuild@1
+      displayName: 'Build solution test.sln'
+      inputs:
+        solution: component.Service/componentService.sln
+        vsVersion: "17.0"
+        msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:DesktopBuildPackageLocation="$(build.artifactstagingdirectory)\WebApp.zip" /p:DeployIisAppPath="Default Web Site"'
+        platform: '$(BuildPlatform)'
+        configuration: '$(BuildConfiguration)'
+        msbuildArchitecture: x64
+
+        
+    - task: PowerShell@2
+      inputs:
+        targetType: 'inline'
+        script: |
+          Start-Sleep -Seconds 300  
+      displayName: 'PowerShell Script'
+      enabled: false
+    
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet test1'
+      inputs:
+          command: test
+          arguments: '/p:CollectCoverage=true "/p:CoverletOutputFormat=\"cobertura,opencover\""'
+          workingDirectory: component.Service
+      continueOnError: true
+
+    
+    - task: DotNetCoreCLI@2
+      displayName: 'dotnet test'
+      inputs:
+        arguments: 'dotnet test -c Test --no-build --no-restore /p:CollectCoverage=true "/p:CoverletOutputFormat=\"cobertura,opencover\""'
+        workingDirectory: component.Service
+      continueOnError: true
+      enabled: false
+
+    - task: PublishCodeCoverageResults@1
+      displayName: 'Publish code coverage from **/coverage.cobertura.xml'
+      inputs:
+        codeCoverageTool: Cobertura
+        summaryFileLocation: '**/coverage.cobertura.xml'
+        pathToSources: component.Service
+      continueOnError: true
+
+    - task: CopyFiles@2
+      displayName: 'Copy Files to: $(build.artifactstagingdirectory)\test'
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)\test2\obj\Release\net6.0\PubTmp\Out'
+        TargetFolder: '$(build.artifactstagingdirectory)\test'
+        CleanTargetFolder: true
+      continueOnError: true
+
+    - task: CopyFiles@2
+      displayName: 'Copy Files to: $(build.artifactstagingdirectory)\Gitversion'
+      inputs:
+        SourceFolder: '$(Build.SourcesDirectory)'
+        Contents: version.json
+        TargetFolder: '$(build.artifactstagingdirectory)\Gitversion'
+      continueOnError: true
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish Build artifact"
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'   
+        ArtifactName: 'drop1'
+        publishLocation: 'Container'
+        
