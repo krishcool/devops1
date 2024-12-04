@@ -1,0 +1,306 @@
+stages:
+- stage: Build_And_Test
+  dependsOn: []
+  
+  jobs:
+- job: Build_And_Test build exe
+  workspace:
+    clean: all # what to clean up before the job runs
+  timeoutInMinutes: 240
+  pool:
+    name: test-clear_AgentPool
+  
+  variables:
+  - name: test-12ProjName
+    value: '$(projectName)'
+
+  - name: test-toolPath
+    value: '$(Build.SourcesDirectory)\tools\test-tool\tools'
+  
+  - name: test-12ProjectID
+    value: $(test-12PrjID)
+  
+  - name: PackageIdentifier
+    value: 'PackageIdentifier.exe'
+  
+  - name: test-12PackageCreator
+    value: 'test-12PackageCreator.exe'
+
+  - name: ArtifactoryUploader
+    value: 'ArtifactoryUploader.exe'
+
+  - name: test-12Token
+    value: $(Token)
+      
+  - name: test-12URL
+    value: $(Produrl)
+
+  - name: bomFolderPath
+    value: $(Build.SourcesDirectory)\BOM
+       
+  - name:  artifactoryUploadUser
+    value: $(Apiuser)
+        
+  - name:  artifactoryUploadApiKey
+    value: $(test-sepp-artifactory-ref-token)
+      
+  - name: testurl
+    value: $(ccd-test-url)
+    
+  - name: artifactoryUploaderRelease
+    value: 'false'
+      
+  - name: test-12AuthTokenType
+    value: '$(tokenType)'
+   
+  steps:
+
+#- checkout: self  # identifier for your repository resource
+   # clean: true  # if true, execute `execute git clean -ffdx && git reset --hard HEAD` before fetching
+  
+  - task: CmdLine@2
+    displayName: 'Checking details of branch'
+    inputs:
+      script: |
+        git status
+        echo "build number : $(Build.BuildNumber)"
+        echo "agent name : $(Agent.Name)"
+        echo "agent version : $(Agent.Version)"
+        echo "Build SourceBranch : $(Build.SourceBranch)"
+        echo "Build Repository Uri : $(Build.Repository.Uri)"
+        echo "Build RequestedForEmail : $(Build.RequestedForEmail)"
+        echo "Build Build_SourceVersion : $(Build.SourceVersion)"
+        echo "Build Build_SourceVersionMessage : $(Build.SourceVersionMessage)"
+        echo "Build_BuildNumber : $(Build.BuildNumber)"
+        echo "Build_DefinitionName : $(Build.DefinitionName)"
+        echo "System_CollectionUri : $(System.CollectionUri)"
+        echo "System_TeamProject : $(System.TeamProject)"
+        echo "Build_BuildId : $(Build.BuildId)"
+
+  - task: SonarQubePrepare@6
+    displayName: "code quality preparation"
+    enabled: true
+    inputs:
+      SonarQube: 'SonarQube'
+      scannerMode: 'MSBuild'
+      projectKey: 'test-energy:test-clear:abccomponent'
+      projectName: 'Artifactory_abccomponent'
+      extraProperties: |
+        sonar.cs.opencover.reportsPaths=$(Build.SourcesDirectory)/coverage/*.xml
+  
+  - task: NuGetAuthenticate@1
+    inputs:
+      nuGetServiceConnections: 'tesetsvc-nuget, tesetsvc-nuget-egll'
+  
+  - task: NuGetCommand@2
+    displayName: 'Install GitVersion'
+    inputs:
+      command: 'restore'
+      restoreSolution: '../GitVersion.config'
+      feedsToUse: 'config'
+      externalFeedCredentials: 'tesetsvc-nuget-eglls, nuget-test'
+    continueOnError: true
+ 
+    
+  - task: CmdLine@2
+    enabled: true
+    displayName: 'restore'
+    inputs:
+      script: |
+        echo "sln restore"
+        dotnet restore $(Build.SourcesDirectory)\src\abccomponent.sln
+      workingDirectory: '$(Build.SourcesDirectory)'
+  
+  - task: CmdLine@2
+    enabled: true
+    displayName: 'build License clearing sln'
+    inputs:
+      script: |
+        echo "sln build"
+        dotnet build $(Build.SourcesDirectory)\src\abccomponent.sln
+      workingDirectory: '$(Build.SourcesDirectory)'
+  
+  
+    
+  - task: PowerShell@2
+    inputs:
+      targetType: 'inline'
+      script: |
+        $SolutionDir = "$(Build.SourcesDirectory)\src"
+        $TestProjects = Get-ChildItem -Path $SolutionDir\*test*.csproj -Recurse -exclude TestUtilities.csproj,UnitTestUtilities.csproj
+        Write-Host "**************************The test projects considered for execution: $TestProjects   ******************************"
+        Write-Host "********************************************************************************************************************"
+        foreach ($Project in $TestProjects) 
+        { 
+                $CoverageReportName = $Project.BaseName
+                $CoverageReport="$(Build.SourcesDirectory)\coverage"
+                Write-Host $Project.DirectoryName
+                $TestProject = $Project.DirectoryName
+                Push-Location $Project.PSParentPath
+                &dotnet add package coverlet.msbuild --version 3.2.0
+                &dotnet test --configuration Release --logger trx /p:CollectCoverage=true /p:CoverletOutputFormat=opencover /p:CoverletOutput=$CoverageReport\$CoverageReportName.xml
+        }
+      workingDirectory: '$(Build.SourcesDirectory)'
+    displayName: unit tests
+  
+  - task: CmdLine@2
+    enabled: true
+    displayName: 'generate report'
+    condition: succeededOrFailed()
+    continueOnError: true
+    inputs:
+        script: |
+          dotnet tool install dotnet-reportgenerator-globaltool --version 5.1.4 --tool-path .
+          .\reportgenerator.exe "-reports:$(Build.SourcesDirectory)/coverage/*.xml" "-targetdir:coverage/Cobertura" "-reporttypes:Cobertura;HTMLInline;HTMLChart"
+   
+  - task: PublishCodeCoverageResults@2
+    enabled: true
+    displayName: 'publish code coverage results'
+    condition: succeededOrFailed()
+    continueOnError: true
+    inputs:
+      codeCoverageTool: 'Cobertura'
+      summaryFileLocation: '$(Build.SourcesDirectory)/coverage/Cobertura/Cobertura.xml'
+      reportDirectory: '$(Build.SourcesDirectory)/coverage/Cobertura'
+
+  - task: SonarQubeAnalyze@6
+    inputs:
+        jdkversion: 'JAVA_HOME_17_X64'
+    displayName: "SonarQube Analyze"
+
+  - task: SonarQubePublish@6
+    condition: succeededOrFailed()
+    enabled: true
+    inputs:
+      pollingTimeoutSec: '300'
+   
+  - task: ArchiveFiles@2
+    inputs:
+          rootFolderOrFile: '$(Build.SourcesDirectory)/log'
+          includeRootFolder: true
+          archiveType: 'zip'
+          archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+          replaceExistingArchive: true
+    displayName:  Logs Files Archive      
+
+  - task: PublishPipelineArtifact@1
+    inputs:
+          targetPath: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip'
+          artifact: 'Logs'
+          publishLocation: 'pipeline'
+    displayName: Logs Artifact
+
+  - task: ArchiveFiles@2
+    inputs:
+          rootFolderOrFile: '$(Build.SourcesDirectory)\BOM'
+          includeRootFolder: true
+          archiveType: 'zip'
+          archiveFile: '$(Build.ArtifactStagingDirectory)/BOM-Compare.zip'
+          replaceExistingArchive: true
+    displayName: BOM Compare Logs Archive     
+        
+  - task: PublishPipelineArtifact@1
+    inputs:
+          targetPath: '$(Build.ArtifactStagingDirectory)/BOM-Compare.zip'
+          artifact: 'BOM Compare Logs'
+          publishLocation: 'pipeline'
+    displayName: BOM Compare Logs Artifact
+	
+	
+- stage: Create_nupkg
+  dependsOn: Build_And_Test 
+  condition: succeeded('Build_And_Test')
+  
+  jobs:
+  - job: Create_nupkg_Build_info
+    pool:
+        name: 'test-clear_AgentPool'
+
+    steps:
+    - checkout: self
+      persistCredentials: true 
+
+      
+      # package creation 
+    - task: NuGetCommand@2
+      displayName: 'NuGet pack'
+      inputs:
+       command: 'pack'
+       packagesToPack: 'abccomponent.nuspec'
+       versioningScheme: 'byEnvVar'
+       versionEnvVar: 'PackageVersion'
+	 
+	  # Prepare Drop - nuget package
+    - task: CopyFiles@2
+      inputs:
+       SourceFolder: '$(Build.SourcesDirectory)'
+       Contents: '*.nupkg'
+       TargetFolder: '$(build.artifactstagingdirectory)\Nuget'
+      displayName: 'copy nuget package to artifact path'
+   
+    
+     # Publish to drop
+    - task: PublishBuildArtifacts@1
+      inputs:
+       PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+       ArtifactName: 'drop'
+       publishLocation: 'Container'
+      displayName: 'publish artifacts' 
+
+
+- stage: Publish
+  dependsOn: Build_And_Test 
+  condition: succeeded('Build_And_Test')
+  
+  jobs:
+  - job: Publish_Build_info
+    pool:
+        name: 'test-clear_AgentPool'
+
+    steps:
+    - checkout: self
+      persistCredentials: true 
+	
+	 # Push nuget package
+  - task: CmdLine@2
+    inputs:
+        script: |
+          nuget push *.nupkg -Source https://test.jfro.io/artifactory/api/nuget/tesetsvc-nuget/
+        workingDirectory: '$(build.artifactstagingdirectory)'
+    displayName: 'Push Nuget Package'
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.Reason'], 'Manual'),eq(variables['Release_BuildInfo'], 'True'))
+
+    
+   # Create Tag
+  - task: CmdLine@2  
+    displayName: 'Create Tag'
+    inputs:
+        script: |
+          git config user.email %BUILD_REQUESTEDFOREMAIL%
+          git config user.name "%BUILD_REQUESTEDFOR%"
+
+          git tag -a v$(PackageVersion) -m "$(Tag_Description)"
+          git push origin v$(PackageVersion)
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.Reason'], 'Manual'),eq(variables['Release_BuildInfo'], 'True'))
+
+   
+
+      # Publish NPM Package for Demo App
+    - task: CmdLine@2
+      displayName: 'NPM Publish to Artifactory for Demo App'
+      inputs:
+        script: |
+          npm publish --registry https://test.jfro.io/artifactory/api/npm/tesetsvc-npm-egll/
+        workingDirectory: '$(Build.SourcesDirectory)\js\DemoApp\'
+      condition: and(succeeded(), ne(variables['Build.SourceBranch'], 'refs/heads/master'), eq(variables['Build.Reason'], 'Manual'))
+  
+  
+
+
+
+  
+
+       
+  
+ 
+      
