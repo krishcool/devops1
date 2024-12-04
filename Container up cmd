@@ -1,0 +1,37 @@
+1. Open application (if not, make the server up)
+2. create token 
+3. docker exec -it conatinername service postgresql stop
+tar file
+4. I)docker stop conatinername
+    use the docker image with 0 components and create a container
+   II)create container with new image and then create a token 
+5. docker commit CONTID dockerimage/hfrog_link
+6. docker push dockerimage/hfrog_link
+ 
+*****************Testing*****************
+login into VM,
+1. docker rm conatinername
+2. docker rmi <image>
+3. docker run --name conatinername --memory=10g -t -d -p PORT:PORT -p PORT:PORT -p PORT:PORT dockerimage/hfrog_link
+
+
+login into VM,
+ docker exec -it conatinername service postgresql stop
+ docker stop conatinername
+ docker rm conatinername
+ docker rmi <image>
+ docker run --name conatinername --memory=7g -t -d -p PORT:PORT -p PORT:PORT -p PORT:PORT dockerimage/hfrog_link
+
+login into VM,
+ 
+ docker exec -it conatinername service postgresql stop
+ docker stop conatinername
+ docker rm conatinername
+ docker rmi <image>
+
+3. docker run --name conatinername --memory=7g -t -d -p PORT:PORT -p PORT:PORT -p PORT:PORT dockerimage/hfrog_link
+
+## To untar images
+  
+  
+  docker save -o applicationlatestimage.tar dockerimage/hfrog_linkest
