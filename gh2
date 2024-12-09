@@ -1,0 +1,384 @@
+name: Build & Test
+
+on: 
+ push:
+ pull_request:
+
+jobs:
+
+  build:
+    runs-on: windows-latest
+  
+    defaults:
+      run:
+        working-directory: .
+    outputs:
+      semver: ${{ steps.gitversion.outputs.semver }}
+      productname_tool: ${{ steps.packageBuildResults.outputs.productname_tool }}  
+      nupkg-productname_tool: ${{ steps.createNupkg.outputs.nupkg-productname_tool }}
+      
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0   
+    
+    - name: Setup Version      
+      uses: gittools/actions/gitversion/setup@v0.10.2
+      with:
+        versionSpec: '5.12.0'
+      env: 
+        ACTIONS_ALLOW_UNSECURE_COMMANDS: TRUE
+    
+    - name: Determine Version      
+      uses: gittools/actions/gitversion/execute@v0.10.2
+      with:
+        useConfigFile: true        
+      env: 
+        ACTIONS_ALLOW_UNSECURE_COMMANDS: TRUE
+
+    - name: get SemVer   
+      #if: ${{ false }}  # disable for now
+      id: gitversion
+      run: |
+        echo "SemVer: v$($env:GitVersion_SemVer)" 
+        Write-Host "::set-output name=semver::$($env:GitVersion_MajorMinorPatch)"  
+        $fileName = "dummy-v$($env:GitVersion_SemVer)"
+        echo "SemVerMMP: v$($env:GitVersion_MajorMinorPatch)"
+        Write-Host "Filename: '$fileName'" 
+        
+    - name: Add msbuild to PATH
+      uses: microsoft/setup-msbuild@v1.3.1
+      
+    - name: update appsettingsUnitTest.json
+      run: ./Scripts/json_update_ut.ps1 -JsonFile 'src\UnitTestUtilities\appsettingsUnitTest.json' 
+      env:
+        tool120HOST: ${{ secrets.tool120HOST }}
+        tool120APPPORT: ${{ secrets.tool120APPPORT }}
+        toolsyHOST: ${{ secrets.toolsyHOST }}
+        toolsyAPPPORT: ${{ secrets.toolsyAPPPORT }}
+        JFROGURL: ${{ secrets.JFROGURL }}
+        
+    - name: Restore Packages
+      run: dotnet restore src\productname_tool.sln 
+    
+    - name: Build
+      run: |
+       dotnet build src\productname_tool.sln
+        Write-Host "Files in directory:"
+        dir  $env:GITHUB_WORKSPACE\out\net8.0
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+         name: buildoutput
+         path: ${{ github.workspace }}/out/net8.0
+    
+    - name: Archive Build Log
+      uses: actions/upload-artifact@v4
+      if: ${{ success() || failure() }}
+      with:
+        name: Compile_Solution_log
+        path: |
+          $env:GITHUB_WORKSPACE/src/*.binlog
+          $env:GITHUB_WORKSPACE/*.binlog  
+
+    - name: Archive Build Output
+      uses: actions/upload-artifact@v4
+      with:
+        name: tool-name
+        path: |
+           out/tool-name
+    
+    - name: Create zip
+      id: packageBuildResults
+      run: |
+        $sourceFolder = Join-Path $env:GITHUB_WORKSPACE "out" | Join-Path -ChildPath "*"
+        $outFolder = Join-Path $env:GITHUB_WORKSPACE "out" | Join-Path -ChildPath "tool-name" 
+        New-Item -ItemType Directory -Force -Path $outFolder
+        $fileName = "tool-name-v7.0.1.zip"
+        Write-Host "Filename: '$fileName'"
+        Write-Host "sourceFolder: '$sourceFolder'"
+        Write-Host "Outfolder: '$outFolder'"
+        Write-Host "::set-output name=productname_tool::$($fileName)"
+        $outPath = Join-Path $outFolder $fileName
+        Compress-Archive -DestinationPath $outPath -Path $sourceFolder -CompressionLevel Optimal
+         
+    - name: Test 
+      #if: ${{ false }}  # disable for now
+      run: |
+        $TestProjects = Get-ChildItem -Path *test*.csproj -Recurse -exclude TestUtilities.csproj,UnitTestUtilities.csproj,tool120IntegrationTest.csproj
+        Write-Host "**************************The test projects considered for execution: $TestProjects   ******************************"
+        Write-Host "********************************************************************************************************************"
+        foreach ($Project in $TestProjects) 
+        {                 
+                Write-Host $Project.DirectoryName
+                $TestProject = $Project.DirectoryName
+                Push-Location $Project.PSParentPath
+                dotnet test --no-build --configuration Release
+        }
+
+
+    - name: Archive Build Output
+      uses: actions/upload-artifact@v4
+      with:
+        name: tool-name
+        path: |
+           out/tool-name
+           
+    - name: Create Nuget Packages 
+      id: createNupkg
+      run: |
+        nuget pack CA.nuspec -Version 7.0.1
+        Write-Host "::set-output name=nupkg-productname_tool::tool-name.7.0.1.nupkg"
+        
+    - name: Archive NuGet Packages
+      uses: actions/upload-artifact@v4
+      with:
+        name: nuget-tool-name
+        path: |
+          *.nupkg
+          
+  build-docker:
+    runs-on: ubuntu-latest
+    needs: build
+
+    outputs:
+     docker-productname_tool: ${{ steps.builddocker.outputs.docker-productname_tool }}
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  
+
+    - name: Download Build Output
+      uses: actions/download-artifact@v4
+      with:
+          name: buildoutput
+          path: ${{ github.workspace }}/out/net8.0
+      
+
+    - name: Build the Docker image
+      id: builddocker
+      #if: ${{ false }}  # disable for now
+      run: |
+        echo "Files in directory:"
+        docker build . --file Dockerfile --tag ${{ github.repository }}:tool-name-v7.0.1
+        docker save ${{ github.repository }}:tool-name-v7.0.1 -o tool-name-v7.0.1.tar
+        echo "::set-output name=docker-productname_tool::tool-name-v7.0.1.tar"
+        
+    - name: Archive docker image      
+      #if: ${{ false }}  # disable for now
+      uses: actions/upload-artifact@v4
+      with:
+        name: docker-tool-name
+        path: |
+          *.tar
+
+    
+          
+  release:
+    if: github.ref == 'refs/heads/main'    
+    runs-on: windows-latest
+    needs: [build, build-docker]
+  
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  
+          
+      - name: Download Build Output
+        uses: actions/download-artifact@v4
+        with:
+          name: tool-name
+
+      - name: Download NuGet Package
+        uses: actions/download-artifact@v4
+        with:
+          name: nuget-tool-name
+      
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-tool-name
+          
+      - name: Debug
+        run: |
+          tree
+      
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+        with:
+          tag_name: v7.0.1
+          release_name: Release v7.0.1
+          body: |
+            ${{ github.event.head_commit.message }}
+          draft: true
+          prerelease: false   
+          
+      - name: Upload Zip
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} 
+          asset_path: ./${{ needs.build.outputs.productname_tool }}
+          asset_name: ${{ needs.build.outputs.productname_tool }}
+          asset_content_type: application/zip
+          
+      - name: Upload Nupkg
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} 
+          asset_path: ./${{ needs.build.outputs.nupkg-productname_tool }}
+          asset_name: ${{ needs.build.outputs.nupkg-productname_tool }}
+          asset_content_type: application/zip
+        
+      - name: Upload Docker
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} 
+          asset_path: ./${{ needs.build-docker.outputs.docker-productname_tool }}
+          asset_name: ${{ needs.build-docker.outputs.docker-productname_tool }}
+          asset_content_type: application/zip
+          
+      - name: Upload ReadmeOSS_nupkg file
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} 
+          asset_path: ${{ github.workspace }}\ReadmeOSS_tool-name_nupkg.html
+          asset_name: ReadmeOSS_tool-name_nupkg.html
+          asset_content_type: text/html
+        
+      - name: Upload ReadmeOSS_Docker file
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }} 
+          asset_path: ${{ github.workspace }}\ReadmeOSS_tool-name_DockerImage.html
+          asset_name: ReadmeOSS_tool-name_DockerImage.html
+          asset_content_type: text/html
+		  
+##########################
+
+name: Docker-publish
+
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+on:
+  release:
+    types: [published]
+  
+
+env:
+  # Use docker.io for Docker Hub if empty
+  REGISTRY: ghcr.io
+  # github.repository as <account>/<repo>
+  IMAGE_NAME: ${{ github.repository }}
+
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+     
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: setup dotnet
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '3.1.x'
+          
+      - name: build
+        run: dotnet build src/productname_tool.sln
+    
+      # Workaround: https://github.com/docker/build-push-action/issues/461
+      - name: Setup Docker buildx
+        uses: docker/setup-buildx-action@v2
+
+      # Login against a Docker registry except on PR
+      # https://github.com/docker/login-action
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Extract metadata (tags, labels) for Docker
+      # https://github.com/docker/metadata-action
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+
+
+      # Build and push Docker image with Buildx (don't push on PR)
+      # https://github.com/docker/build-push-action
+      - name: Build and push Docker image
+        id: build-and-push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' && github.event_name != 'schedule' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          
+#############################
+
+name: Publish NuGet Packages
+
+on:
+  release:
+    types: [published]
+    
+permissions:
+  packages: write
+  contents: read  
+  
+jobs:
+  publish:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Download NuGet Packages from Release
+        run: |
+            Write-Host "GITHUB_REF: '$($env:GITHUB_REF)'"
+            $prefix = "refs/tags/"
+            $name = $($env:GITHUB_REF).Substring($prefix.Length)
+            Write-Host "name: '$name'"
+            gh release download $name --repo company/tool-name --pattern '*.nupkg' --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Publish to github packages
+        run: |          
+          dotnet nuget add source --username ${{ secrets.USERNAME }} --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github "https://nuget.pkg.github.com/company/index.json"
+          dotnet nuget push "*.nupkg" --api-key ${{ secrets.GITHUB_TOKEN }} --source github
+        env:
+            USERNAME: ${{ secrets.USERNAME }}
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
