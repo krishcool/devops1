@@ -1,0 +1,330 @@
+FROM mcr.microsoft.com/dotnet/sdk:7.0 AS build-env
+WORKDIR /App
+
+# Copy everything
+COPY . ./
+# Restore as distinct layers
+RUN dotnet restore
+# Build and publish a release
+RUN dotnet publish -c Release -o out
+
+# Build runtime image
+FROM mcr.microsoft.com/dotnet/aspnet:7.0
+WORKDIR /App
+COPY --from=build-env /App/out .
+ENTRYPOINT ["dotnet", "DotNet.Docker.dll"]
+
+
+#################################
+FROM debian:latest
+# FROM debian:8
+
+# Avoid warnings by switching to noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Configure apt and install packages
+RUN apt-get update \
+    && apt-get -y install --no-install-recommends apt-utils 2>&1 \
+    #
+    # Install the Azure CLI
+    && apt-get install -y apt-transport-https curl gnupg2 lsb-release \
+    && echo "deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/azure-cli.list \
+    && curl -sL https://packages.microsoft.com/keys/microsoft.asc | apt-key add - 2>/dev/null \
+    && apt-get update
+
+RUN apt-get install -y azure-cli
+
+# Switch back to dialog for any ad-hoc use of apt-get
+ENV DEBIAN_FRONTEND=dialog
+
+
+
+######################################
+
+FROM mcr.microsoft.com/windows/servercore:ltsc2019
+
+RUN ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"] \
+    Invoke-WebRequest -OutFile nodejs.zip -UseBasicParsing "https://nodejs.org/dist/v14.21.3/node-v14.21.3-win-x64.zip"; \ 
+    Expand-Archive nodejs.zip -DestinationPath C:\; \
+    Rename-Item "C:\\node-v14.21.3-win-x64" c:\nodejs
+
+
+#set node.js Environmnet variable
+ENV NODEJS_HOME="C:/"
+
+
+#Download Visual studio 2022
+RUN powershell -command \
+    $url2 = 'https://aka.ms/vs/17/release/vs_buildtools.exe'; \
+    $vs_setup_path = 'C:\vs_buildtools.exe'; \
+    Invoke-WebRequest -Uri $url2 -OutFile $vs_setup_path; \
+    $vs_install_args = '--quiet --wait  --norestart --nocache --installPath "C:\BuildTools" --add Microsoft.VisualStudio.Workload.WebBuildTools --add Microsoft.VisualStudio.MSBuildTools --add Microsoft.VisualStudio.Component.WebDeploy --add Microsoft.VisualStudio.NET7.0.Runtime --add Microsoft.VisualStudio.Workload.NodeBuildTools'; \
+    Start-Process -Wait -FilePath $vs_setup_path -ArgumentList $vs_install_args
+
+#set environment variable for MSbuild
+ENV MSBUILD_PATH="C:\BuildTools\MSBuild\Current\Bin"
+
+
+#Download Nuget 6.3
+RUN powershell -command \
+    $url = 'https://dist.nuget.org/win-x86-commandline/v6.3.0/nuget.exe'; \
+    $path = 'C:\NuGet.exe'; \
+    Invoke-WebRequest -Uri $url -OutFile $path
+	
+	
+#set env and path globally
+ENV NUGET_HOME="C:/" 
+RUN setx /M PATH "%PATH%;%MSBUILD_PATH%;%NUGET_HOME%;%ASP_PATH%;%NODEJS_HOME%"
+
+#create a folder and copy sln file
+RUN mkdir C:\app\repo\test
+COPY test /C:/app/repo/test 
+
+CMD ["cmd", "powershell"]
+
+######################################
+
+FROM mcr.microsoft.com/windows/servercore:ltsc2019
+
+COPY dotnet-sdk-6.0.316-win-x64.exe /C:/
+RUN dotnet-sdk-6.0.316-win-x64.exe /q /norestart
+
+#set environment variable for ASP.NET 6.0
+#ENV ASP_PATH="C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Current\Bin"
+ENV ASP_PATH="C:\BuildTools\MSBuild\Sdks\Microsoft.NET.Sdk.Web\Sdk"
+
+#donwload and install vstest installer
+#ADD https://aka.ms/vstestinstaller.exe ./
+#RUN vstest_installer.exe --quiet
+
+# Install .NET
+#ENV DOTNET_VERSION=7.0.305
+
+#RUN powershell -Command \
+ #       $ErrorActionPreference = 'Stop'; \
+  #      $ProgressPreference = 'SilentlyContinue'; \
+   #     Invoke-WebRequest \
+    #####    -InstallDir '/Program Files/dotnet' \
+         #   -Channel 6.0 \
+          #  -Runtime dotnet; \
+        #Remove-Item -Force dotnet-install.ps1 \
+    #&& setx /M PATH "%PATH%;C:\Program Files\dotnet"
+
+# SDK version
+#ENV DOTNET_SDK_VERSION=6.0.412 
+#RUN powershell -Command \
+#        $ $ErrorActionPreference = 'Stop'; \
+ #       $ProgressPreference = 'SilentlyContinue'; \
+  #      Invoke-WebRequest -OutFile dotnet.zip https://dotnetcli.azureedge.net/dotnet/Sdk/$Env:DOTNET_SDK_VERSION/dotnet-sdk-$Env:DOTNET_SDK_VERSION-win-x64.zip; \
+   #     $dotnet_sha512 = '9cad4fe5efbf9d37bcefad88a1623da12946958759a6ab7795602598a9e2c7e9a948c335e7fbb002b7c03af877798f24c97546857e8822f639cf92ae81006221'; \
+    #    if ((Get-FileHash dotnet.zip -Algorithm sha512).Hash -ne $dotnet_sha512)
+
+#copy and install vs2017
+#COPY vs_Professional.exe /C:/
+#RUN  $vs_setup_path = 'C:\vs_buildtools.exe'; \
+ #   Invoke-WebRequest -Uri $url -OutFile $vs_setup_path; \
+  #  $vs_install_args = '--quiet --wait  --norestart --nocache --installPath "C:\BuildTools" --add Microsoft.VisualStudio.Workload.WebBuildTools --add Microsoft.VisualStudio.MSBuildTools --add Microsoft.VisualStudio.Component.WebDeploy'; \
+   # Start-Process -Wait -FilePath $vs_setup_path -ArgumentList $vs_install_args
+
+#copy and install asp.net framework 4.8
+#COPY dotnet-sdk-6.0.411-win-x64.exe /C:/ 
+#RUN C:/dotnet-sdk-6.0.411-win-x64.exe /q /norestart
+
+#COPY dotnet-sdk-6.0.119-win-x64.exe /C:/ 
+#RUN C:/dotnet-sdk-6.0.119-win-x64.exe /q /norestart
+
+#COPY dotnet-sdk-7.0.305-win-x64.exe /C:/
+#RUN C:/dotnet-sdk-7.0.305-win-x64.exe /q /norestart
+
+#COPY dotnet-sdk-6.0.314-win-x64.exe /C:/ 
+#RUN C:/dotnet-sdk-6.0.314-win-x64.exe /q /norestart
+
+#Install git on windows
+RUN powershell -Command Invoke-WebRequest -Uri 'https://github.com/git-for-windows/git/releases/download/v2.33.0.windows.2/MinGit-2.33.0.2-64-bit.zip' -OutFile 'git.zip' ; \
+Expand-Archive -Path 'git.zip' ; \
+Remove-Item -Force 'git.zip' ;\
+$env:PATH = 'C:\git\cmd;C:\git\usr\bin;' + $env:PATH ; \
+[Environment]::SetEnvironmnetVariable('PATH',$env:PATH, [EnvironmentVariableTarget]::Machine)
+
+
+#Download Visual studio 2022
+RUN powershell -command \
+    $url = 'https://aka.ms/vs/17/release/vs_buildtools.exe'; \
+    $vs_setup_path = 'C:\vs_buildtools.exe'; \
+    Invoke-WebRequest -Uri $url -OutFile $vs_setup_path; \
+    $vs_install_args = '--quiet --wait  --norestart --nocache --installPath "C:\BuildTools" --add Microsoft.VisualStudio.Workload.WebBuildTools --add Microsoft.VisualStudio.MSBuildTools --add Microsoft.VisualStudio.Component.WebDeploy --add Microsoft.VisualStudio.Workload.ManagedDesktop --add Microsoft.VisualStudio.Workload.NetCoreBuildTools --add Microsoft.VisualStudio.Workload.UniversalBuildTools'; \
+    Start-Process -Wait -FilePath $vs_setup_path -ArgumentList $vs_install_args
+
+#set environment variable for MSbuild
+ENV MSBUILD_PATH="C:\BuildTools\MSBuild\Current\Bin"
+
+#Download Nuget 6.3
+RUN powershell -command \
+    $url = 'https://dist.nuget.org/win-x86-commandline/v6.3.0/nuget.exe'; \
+    $path = 'C:\NuGet.exe'; \
+    Invoke-WebRequest -Uri $url -OutFile $path
+
+
+#create a folder and copy sln file
+RUN mkdir C:\app\repo
+COPY test /C:/app/repo/
+
+
+
+#set env and path globally
+ENV NUGET_HOME="C:/" 
+RUN setx /M PATH "%PATH%;%MSBUILD_PATH%;%NUGET_HOME%;%ASP_PATH%"
+
+CMD ["cmd", "powershell"]
+
+##########################
+
+FROM mcr.microsoft.com/windows/servercore:ltsc2019 as build
+
+RUN mkdir dotnet
+
+#copy and install asp.net framework 4.8
+
+RUN powershell -command \
+    $url1 = 'http://go.microsoft.com/fwlink/?LinkId=2085167'; \
+    $path1 = 'C:\dotnet\ndp48-devpack-enu.exe'; \
+    Invoke-WebRequest -Uri $url1 -OutFile $path1 ; \
+    C:\dotnet\ndp48-devpack-enu.exe /q /norestart
+
+
+#set environment variable for ASP.NET 4.8
+ENV ASP_PATH="C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Current\Bin"
+
+
+#Download Visual studio 2022
+RUN powershell -command \
+    $url2 = 'https://aka.ms/vs/17/release/vs_buildtools.exe'; \
+    $vs_setup_path = 'C:\vs_buildtools.exe'; \
+    Invoke-WebRequest -Uri $url2 -OutFile $vs_setup_path; \
+    $vs_install_args = '--quiet --wait  --norestart --nocache --installPath "C:\BuildTools" --add Microsoft.VisualStudio.Workload.WebBuildTools --add Microsoft.VisualStudio.MSBuildTools --add Microsoft.VisualStudio.Component.WebDeploy'; \
+    Start-Process -Wait -FilePath $vs_setup_path -ArgumentList $vs_install_args
+
+#set environment variable for MSbuild
+ENV MSBUILD_PATH="C:\BuildTools\MSBuild\Current\Bin"
+
+#Download Nuget 6.3
+RUN powershell -command \
+    $url = 'https://dist.nuget.org/win-x86-commandline/v6.3.0/nuget.exe'; \
+    $path = 'C:\NuGet.exe'; \
+    Invoke-WebRequest -Uri $url -OutFile $path
+
+
+#create a folder and copy sln file
+RUN mkdir C:\app\repo\Setup\
+COPY Setup /C:/app/repo/Setup 
+
+
+#set env and path globally
+ENV NUGET_HOME="C:/" 
+RUN setx /M PATH "%PATH%;%MSBUILD_PATH%;%NUGET_HOME%;%ASP_PATH%"
+
+CMD ["cmd", "powershell"]
+
+FROM mcr.microsoft.com/windows/servercore:ltsc2019 as build
+
+
+
+#############################
+
+
+#FROM mcr.microsoft.com/dotnet/framework/sdk:4.8-windowsservercore-ltsc2019
+FROM mono:latest
+
+#Install dependencies for vs
+RUN apt-get update \
+ && apt-get install -y wget apt-transport-https \
+ &&wget -q0- https://packages.microsoft.com/keys/microsoft.asc |gpg --dearmor > microsoft.asc.gpg \
+ && mv.microsoft.asc.gpg /etc/apt/trusted.gpg.d/ \
+ && wget -q https://packages.microsoft.com/config/ubuntu/20.04/prod.list \
+ && mv prod.list /etc/apt/sources.list.d/microsoft-prod.list \
+ && chown root:root /etc/apt/trusted.epg.d/microsoft.asc.gpg \
+ && chown root:root /etc/apt/sources.list.d/microsoft-prod.list \
+ && apt-get update \
+ && apt-get install -y msbuild
+
+#Install .NETSDK
+RUN curl -o nuget.exe https://dist.nuget.org/win-x86-commandline/v6.5.0/nuget.exe
+
+#Set the entrypoint for runnin g nuget command
+
+# install git
+RUN apt-get update && apt-get upgrade -y && apt-get install -y git
+
+# Install .NET
+#RUN  apt-get update &&  apt-get install -y dotnet-sdk-4.6.1 && apt-get install -y dotnet-runtime-4.6.1
+RUN mono nuget.exe install GitVersion.CommandLine -Version 5.5.1
+
+apt-get update &&  apt-get install -y dotnet-4.6.1 && apt-get install -y dotnet-4.6.1
+
+
+
+#install git version
+#RUN dotnet tool install --global GitVersion.Tool --version 5.5.1
+
+
+# Install required npm, depends on nodejs 
+RUN apt-get update && apt-get install -y curl \
+    && curl -sL https://deb.nodesource.com/setup_18.x | bash - && apt-get install -y nodejs
+# End__ Install npm
+
+
+# Begin__ Install Nuget
+#RUN apt-get update && apt-get install -y nuget && nuget update -self
+# End___ Install Nuget
+
+
+
+WORKDIR /tmp
+RUN mkdir -p tmp\repo
+COPY Setup /tmp/Setup 
+
+
+
+#RUN mkdir repo
+COPY PostgresDbInstaller.sln /app/repo
+
+
+#######################3
+
+
+#FROM mcr.microsoft.com/dotnet/aspnet:5.0 AS build
+
+#FROM mcr.microsoft.com/dotnet/framework/aspnet:4.8.1
+
+#FROM mcr.microsoft.com/dotnet/sdk:7.0
+
+FROM  mcr.microsoft.com/dotnet/framework/sdk:4.8
+
+#Install .NETSDK
+#RUN apt-get update && apt-get install -y curl \
+ #   && curl -sL  https://aka.ms/dotnet-download | bash - \
+  #  && apt-get install -y nodejs
+
+# Install required npm, depends on nodejs 
+RUN apt-get update && apt-get install -y curl \
+    && curl -sL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs
+# End__ Install npm
+
+
+# Begin__ Install Nuget
+RUN apt-get update && apt-get install -y nuget && nuget update -self
+# End___ Install Nuget
+
+#create a folder
+#RUN mkdir -p Setup.IntegrationTests && cd Setup.IntegrationTests
+
+#create a folder
+RUN mkdir -p Setup && cd Setup
+#copy cs file
+COPY Setup /tmp/Setup
+
+COPY test.sln /tmp/
+
+WORKDIR /tmp
+

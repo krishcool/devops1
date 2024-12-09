@@ -1,0 +1,136 @@
+parameters:
+- name: FRESH_INSTANCE
+  displayName: Fresh Instance
+  default: False
+  values:
+  - False
+  - True
+
+- name: branch
+  displayName: Provide the GitHub branch name
+  type: string
+  default: 'main'
+
+schedules:
+  - cron: "0 0 * * *"
+    displayName: Daily midnight build
+    always: true
+    branches:
+      include:
+      - master
+
+variables:
+  - group: TOKENS_grp
+  - name: branch_name
+    value: ${{ parameters.branch }}
+
+jobs:
+- job: build
+  workspace:
+    clean: all # what to clean up before the job runs
+  timeoutInMinutes: 240
+  pool:
+    name: $(agentpool)
+
+
+  steps:
+
+  - checkout: self  # identifier for your repository resource
+    clean: true  # if true, execute `execute git clean -ffdx && git reset --hard HEAD` before fetching
+  - task: CmdLine@2
+    displayName: 'Checkout github repo'
+    inputs:
+      script: 'git clone --branch $(branch_name) https://github.com/'
+	  
+  - task: CopyFiles@2
+    displayName: 'copy src'
+    condition: succeededOrFailed()
+    inputs:
+      SourceFolder: '$(Build.SourcesDirectory)/Continuous-Clearing/src'
+      Contents: '**'
+      TargetFolder: '$(Build.SourcesDirectory)/src/'
+      CleanTargetFolder: False
+
+  - task: CopyFiles@2
+    displayName: 'copy Testfiles'
+    condition: succeededOrFailed()
+    inputs:
+      SourceFolder: '$(Build.SourcesDirectory)/Continuous-Clearing/TestFiles'
+      Contents: '**'
+      TargetFolder: '$(Build.SourcesDirectory)/TestFiles/'
+      CleanTargetFolder: False
+
+
+
+  - task: PowerShell@2
+    displayName: 'prepare environment'
+    inputs:
+      filePath: 'test.ps1'
+      errorActionPreference: 'continue'
+    enabled: true
+    condition: and(succeeded(), eq('${{ parameters.FRESH_INSTANCE }}', 'True'))
+    env:
+      DOCKERDEVARTIFACTORY: $(DOCKERDEVARTIFACTORY)
+      APPPORT: $(APPPORT)
+    
+
+  - task: CmdLine@2
+    enabled: true
+    displayName: 'lock json creation'
+    inputs:
+      script: |
+        echo "sln restore"
+        dotnet restore $(Build.SourcesDirectory)\src\test.sln --use-lock-file
+      workingDirectory: '$(Build.SourcesDirectory)\src'
+
+###############################
+template
+parameters:
+- name: Build_test
+  type: string
+  default: ''
+
+- name: jfrogapi
+  type: string
+  default: ''
+
+- name: sbomfilePath
+  type: string
+  default: ''
+
+
+
+steps:
+    ##### Build Install #####
+  - task: PowerShell@2
+    displayName: Build_Install ${{ parameters.build_package_version }}
+    inputs:
+      targetType: 'inline'
+      script: | 
+        $Value = "${{ parameters.build_package_version }}"
+        if (!($Value )) {   
+          Write-Host $Value
+          Write-Host "##[command]Installing latest build_info Tool.." 
+          nuget install Build_Info_Publisher -x 
+        }
+        else {
+          Write-Host "##[command] Installing build Tool with version ${{ parameters.package_version }}" 
+          nuget install Build -Version ${{ parameters.package_version }}
+        }
+
+
+ ###############
+ 
+ To call template
+  - template: Template/Build.yml
+    parameters: 
+      Build: "$(Build.SourcesDirectory)/out/net8.0/test.exe"
+      jfrogapi: "https://jfrog.io/artifactory"
+      Apikey: $(APIKEY)
+      Apiuser: $(APIUSER)
+
+      
+      
+
+
+ 

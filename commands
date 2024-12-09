@@ -1,0 +1,19 @@
+robocopy
+robocopy  D:/tttt E:/ /E /V /R:1 /W:5 /ETA
+
+
+to run linux process in backend for azure agents
+
+nohup ./run.sh &
+
+
+cleanup
+net stop "servicenameofazureagents_in services"
+
+SET rootfolder=D:\Agent\_work
+RD %rootfolder% /Q /S
+MD %rootfolder%
+
+net start "servicenameofazureagents_in services"
+
+
